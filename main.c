@@ -22,6 +22,8 @@ void InicializaTimer1(void);
 void InicializaINT1(void);
 void InicializaPWM1(void);
 void InicializaUART(unsigned long baudrate);
+void InicializaADC(float sample_time);
+
 
 int CalculaPrecargaTimer(float ms);
 void updateDuty(void);
@@ -32,8 +34,9 @@ static _Bool flag_int_T1B = 0;
 
 static float duty_cycle = 0.5;
 static char dato_recibido = 0;
-static unsigned int contador = 0x30;
+static unsigned int contador = 0;
 static int precarga_PTPER = 0;   //cálculo de la precarga del timer 
+static int medida_adc = 0;
  
 
 int main(void) 
@@ -44,6 +47,7 @@ int main(void)
     InicializaINT1();
     InicializaPWM1();
     InicializaUART(9600);
+    InicializaADC(2000.0); //periodo de muestreo = 2kHz
    
     while(1)
     {
@@ -52,7 +56,7 @@ int main(void)
         {
            flag_int_T1A = 0;            
            LED12 = ~LED12;           //led 12 (RB12) encendido apagado por temporizador lento de T1
-           printf("T: %d\r\n",contador);
+           printf("T: %d, %d \r\n",contador++, medida_adc);
         }
         
         //cada interrupción del timer 1...
@@ -60,8 +64,7 @@ int main(void)
         {
             flag_int_T1B = 0;        //efecto dimming en RB15 con la salida PWM
             updateDuty();             
-        }
-        
+        }        
     };
     return 0;
 }
@@ -103,10 +106,51 @@ void __attribute__((interrupt, no_auto_psv))_U1RXInterrupt(void)
 
 }
 
+void __attribute__((interrupt, no_auto_psv))_ADC1Interrupt(void) 
+{
+    IFS0bits.AD1IF = 0; // Borrar la bandera
+    
+    medida_adc = ADC1BUF0;
+    
+    //AD1CHS0 = pin_ad; // Seleccionar el nuevo pin AD
+
+    AD1CON1bits.SAMP = 1;  ; // Empezar a muestrear
+}
+
+
 /***************************************************************************************/
 /******************** INICIALIZACIONES DE PERIFERICOS  *********************************/
 /***************************************************************************************/
 
+void InicializaADC(float sample_time)
+{
+    AD1PCFGL &= ~(1<<5);   //AN5 as analog input
+    AD1CHS0  |= 5;         //Chanel 5 is selected (ADC is multiplexed)
+       
+    
+    AD1CON3bits.ADCS = (int)((sample_time*FCY)) - 1;
+    
+    AD1CON1bits.ADON   = 1; //ADC module is ON
+    AD1CON1bits.AD12B  = 1; //12 bits
+    AD1CON1bits.FORM   = 0; //salida en forma de enteros
+    AD1CON1bits.SSRC   = 7; //Internal counter ends sampling and starts conversion (auto-convert)
+    AD1CON1bits.SIMSAM = 0; //Samples multiple channels individually in sequence
+    AD1CON1bits.ASAM   = 0; //Sampling begins when SAMP bit is set
+    AD1CON1bits.SAMP   = 1; //ADC sample-and-hold amplifiers are holding
+    
+    //AD1CON1 = 0x80E0; // ON, conversión automática
+    //AD1CON1 |= 0x0001; // Empezar a muestrear
+    
+    IFS0bits.AD1IF = 0; // Borrar la bandera
+    IEC0bits.AD1IE = 1; // Habilitar interrupciones
+    IPC3bits.AD1IP = 4; // Prioridad interrupciones
+
+}
+
+
+
+
+/***************************************************************************************/
 void InicializaUART(unsigned long baudrate)
 {
     __builtin_write_OSCCONL(OSCCON & 0xBF); // Desbloquear el PPS
@@ -130,7 +174,7 @@ void InicializaUART(unsigned long baudrate)
 }
 
 
-
+/***************************************************************************************/
 void InicializaES(void)
 {
     AD1PCFGL = 0xFFFF;  //no olvidar si se van a trabajar con los pines superiores
@@ -152,8 +196,12 @@ void InicializaES(void)
     //UART
     TRISB |= 1 << 5;        // U1RX (RB5) - Entrada
     TRISB &= ~(1 << 4);     // U1TX (RB4) - Salida
+    
+    //ADC
+    TRISBbits.TRISB3 = 1;        // RB3 como input (analógica)
 }
 
+/***************************************************************************************/
 void InicializaINT1(void)
 {
     INTCON2bits.INT1EP = 1;  //positive edge
@@ -163,6 +211,7 @@ void InicializaINT1(void)
     RPINR0bits.INT1R = 2;    //reasigna la interrupción en pin RP2     
 }
 
+/***************************************************************************************/
 void InicializaTimer1(void)
 {
     T1CON  = 0x0030; //divisor frecuencia
@@ -175,7 +224,8 @@ void InicializaTimer1(void)
     IEC0bits.T1IE = 1;   //habilita interrupción
     IPC0bits.T1IP = 1;   //prioridad baja
 }
- 
+
+/***************************************************************************************/
 void InicializaPWM1(void)
 {
     float time_base = 0.001;  //1 milisegundo periodo base del PWM
@@ -203,6 +253,8 @@ void InicializaPWM1(void)
     
 }
  
+/***************************************************************************************/
+/***************************************************************************************/
 int CalculaPrecargaTimer(float ms)
 {
     //habría que hacer un switch - case con las opciones de inicialización
