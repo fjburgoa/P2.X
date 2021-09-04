@@ -8,8 +8,8 @@
 
 #include "p33FJ32MC202.h"
 #include "config.h"
+#include <stdio.h>
  
-//b
 
 #define LED12 PORTBbits.RB12
 #define LED13 PORTBbits.RB13
@@ -21,6 +21,7 @@ void InicializaES(void);
 void InicializaTimer1(void);
 void InicializaINT1(void);
 void InicializaPWM1(void);
+void InicializaUART(unsigned long baudrate);
 
 int CalculaPrecargaTimer(float ms);
 void updateDuty(void);
@@ -28,8 +29,11 @@ void updateDuty(void);
 static unsigned int local_timer=0;
 static _Bool flag_int_T1A = 0; 
 static _Bool flag_int_T1B = 0; 
-static int precarga_PTPER = 0;
+
 static float duty_cycle = 0.5;
+static char dato_recibido = 0;
+static unsigned int contador = 0x30;
+static int precarga_PTPER = 0;   //cálculo de la precarga del timer 
  
 
 int main(void) 
@@ -39,93 +43,115 @@ int main(void)
     InicializaTimer1();
     InicializaINT1();
     InicializaPWM1();
+    InicializaUART(9600);
    
     while(1)
     {
-        /*
-        //timer 1 sin interrupciones
-        if (IFS0bits.T1IF)
-        {
-            IFS0bits.T1IF = 0;
-            local_timer++;
-            
-            if (local_timer==10)
-            {
-                local_timer = 0;
-                LED15 = ~LED15;
-            }
-        }
-        */
-      
-        /*
-        // entrada 2 sin interrupciones
-        if ( SW2 )
-            LED14 = 1;    
-        else
-            LED14 = 0;
-        */
-          
-        
-        //cada 200 interrupciones del timer 1...
+        //cada 200 interrupciones del timer 1... ~2.5Hz
         if (flag_int_T1A)
         {
            flag_int_T1A = 0;            
-           LED12 = ~LED12;
+           LED12 = ~LED12;           //led 12 (RB12) encendido apagado por temporizador lento de T1
+           printf("T: %d\r\n",contador);
         }
         
         //cada interrupción del timer 1...
         if (flag_int_T1B)
         {
-            flag_int_T1B = 0;
-            updateDuty();
+            flag_int_T1B = 0;        //efecto dimming en RB15 con la salida PWM
+            updateDuty();             
         }
-        
-		
-        
         
     };
     return 0;
 }
 
-
+/******************** INTERRUPCION EXTERNA 1 *******************************************/
 void __attribute__((interrupt, no_auto_psv))_INT1Interrupt(void)
 {    
-    LED14 = ~LED14;
+    LED14 = ~LED14;             //cuando se recibe interrupción por flanco descendente, cambia de 
     IFS1bits.INT1IF = 0;
 }
 
+/******************** INTERRUPCION TIMER1 **********************************************/
 void __attribute__((interrupt, no_auto_psv))_T1Interrupt(void)
 {
     IFS0bits.T1IF = 0;
     
     local_timer++;
     
-    if (local_timer == 200)
+    if (local_timer == 200)  
     {
         local_timer = 0;
-        flag_int_T1A = 1;
+        flag_int_T1A = 1;     //flag de 200 interrupciones
     }
-    flag_int_T1B = 1;
-    
+    flag_int_T1B = 1;         //flag de interrupción 
 }
+
+
+/******************** INTERRUPCION UART ************************************************/
+void __attribute__((interrupt, no_auto_psv))_U1RXInterrupt(void) 
+{
+    dato_recibido = U1RXREG;
+    
+    if ( U1STAbits.OERR )
+        U1STAbits.OERR = 0;
+
+    IFS0bits.U1RXIF = 0; // Borrar la bandera
+    
+    LED13 = (dato_recibido % 2 == 0) ? 1 : 0;
+
+}
+
+/***************************************************************************************/
+/******************** INICIALIZACIONES DE PERIFERICOS  *********************************/
+/***************************************************************************************/
+
+void InicializaUART(unsigned long baudrate)
+{
+    __builtin_write_OSCCONL(OSCCON & 0xBF); // Desbloquear el PPS
+    RPINR18bits.U1RXR = 5;                  // Remapear U1RX a RP5
+    RPOR2bits.RP4R    = 3;                  // Remapear U1TX a RP4
+    __builtin_write_OSCCONL(OSCCON | 0x40); // Bloquear el PPS
+
+    U1BRG  = FCY / baudrate / 16 - 1; // Velocidad
+    U1MODE = 0x0000; // 8N1
+    U1STA  = 0x8000; // Configuración de interrupciones
+
+    IFS0bits.U1RXIF = 0; // Borrar la bandera Rx
+    IFS0bits.U1TXIF = 0; // Borrar la bandera Tx
+    IEC0bits.U1RXIE = 1; // Habilitar interrupción Rx
+    IEC0bits.U1TXIE = 0; // Deshabilitar interrupción Tx
+    IPC2bits.U1RXIP = 6; // Prioridad interrupción Rx
+    //IPC3bits.U1TXIP = 5; // Prioridad interrupción Tx
+
+    U1MODE |= 1 << 15; // Encender la UART
+    U1STA |= 1 << 10; // Habilitar el módulo Tx
+}
+
 
 
 void InicializaES(void)
 {
     AD1PCFGL = 0xFFFF;  //no olvidar si se van a trabajar con los pines superiores
     
+    //OUTPUTS
     TRISB &= ~(1<<15);      //Bit 15 salida
     TRISB &= ~(1<<14);      //Bit 14 salida
-    
+    TRISB &= ~(1<<13);      //Bit 14 salida
     TRISB &= ~(1<<12);      //Bit 12 salida
-    
-    TRISBbits.TRISB2 = 1;   //Bit 2 entrada
-    
+
     PORTB |= 1<<15;         //a cero
-    PORTB |= 1<<14;         //a cero
-    
+    PORTB |= 1<<14;         //a cero    
+    PORTB |= 1<<13;         //a cero    
     PORTB |= 1<<12;         //a cero
     
+    //INT1
+    TRISBbits.TRISB2 = 1;   //Bit 2 entrada --> además es la interrupción en RB2
+    
+    //UART
+    TRISB |= 1 << 5;        // U1RX (RB5) - Entrada
+    TRISB &= ~(1 << 4);     // U1TX (RB4) - Salida
 }
 
 void InicializaINT1(void)
@@ -134,25 +160,26 @@ void InicializaINT1(void)
     IFS1bits.INT1IF = 0;     //clear flag
     IEC1bits.INT1IE = 1;     //interrupt request enabled
     IPC5bits.INT1IP = 7;     //maxima prioridad
-    RPINR0bits.INT1R = 2;    //interrupción en pin RP2     
+    RPINR0bits.INT1R = 2;    //reasigna la interrupción en pin RP2     
 }
 
 void InicializaTimer1(void)
 {
     T1CON  = 0x0030; //divisor frecuencia
     //PR1    = 1250;   //prescala
-    PR1 = CalculaPrecargaTimer(1);
+    PR1 = CalculaPrecargaTimer(1);   //preescala = 1 milisegundo
     
     T1CON |= 0x8000; //timer ON    
     
-    IFS0bits.T1IF = 0;
-    IEC0bits.T1IE = 1;
-    IPC0bits.T1IP = 1;
+    IFS0bits.T1IF = 0;   //borra flag
+    IEC0bits.T1IE = 1;   //habilita interrupción
+    IPC0bits.T1IP = 1;   //prioridad baja
 }
  
 void InicializaPWM1(void)
 {
-     float time_base = 0.001;  //1 milisegundo periodo base del PWM
+    float time_base = 0.001;  //1 milisegundo periodo base del PWM
+    
 
     P1TCONbits.PTOPS  = 0;     //postscale = 0
     P1TCONbits.PTCKPS = 2;     //prescale  = 1/16
@@ -214,3 +241,28 @@ void updateDuty(void)
     
     P1DC1 = (int) (duty_cycle*(precarga_PTPER+1)*2);  
 }
+
+
+
+        /*
+        //timer 1 sin interrupciones
+        if (IFS0bits.T1IF)
+        {
+            IFS0bits.T1IF = 0;
+            local_timer++;
+            
+            if (local_timer==10)
+            {
+                local_timer = 0;
+                LED15 = ~LED15;
+            }
+        }
+        */
+      
+        /*
+        // entrada 2 sin interrupciones
+        if ( SW2 )
+            LED14 = 1;    
+        else
+            LED14 = 0;
+        */
